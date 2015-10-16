@@ -154,31 +154,13 @@ module Frameit
     # Add the title above the device
     # rubocop:disable Metrics/AbcSize
     def add_title
-      title_images = build_title_images(image.width)
+      title_images = build_title_images(image.width - 2 * keyword_padding, top_space_above_device)
       keyword = title_images[:keyword]
       title = title_images[:title]
 
-      # sum_width: the width of both labels together including the space inbetween
-      #   is used to calculate the ratio
-      sum_width = title.width
-      sum_width += keyword.width + keyword_padding if keyword
+      top_space = (top_space_above_device - title.height) / 2
+      left_space = keyword_padding
 
-      # Resize the 2 labels if necessary
-      smaller = 1.0 # default
-      ratio = (sum_width + keyword_padding * 2) / image.width.to_f
-      if ratio > 1.0
-        # too large - resizing now
-        smaller = (1.0 / ratio)
-
-        Helper.log.debug "Text for image #{self.screenshot.path} is quite long, reducing font size by #{(ratio - 1.0).round(2)}" if $verbose
-
-        title.resize "#{(smaller * title.width).round}x"
-        keyword.resize "#{(smaller * keyword.width).round}x" if keyword
-        sum_width *= smaller
-      end
-
-      top_space = (top_space_above_device / 2.0 - (actual_font_size / 2.0 * smaller)).round # centered
-      left_space = (image.width / 2.0 - sum_width / 2.0).round
 
       # First, put the keyword on top of the screenshot, if we have one
       if keyword
@@ -200,7 +182,7 @@ module Frameit
     # rubocop:enable Metrics/AbcSize
 
     def actual_font_size
-      [top_space_above_device / 3.0, @image.width / 30.0].max.round
+      (75.0 * @image.width / 1242).round
     end
 
     # The space between the keyword and the title
@@ -209,33 +191,40 @@ module Frameit
     end
 
     # This will build 2 individual images with the title, which will then be added to the real image
-    def build_title_images(max_width)
+    def build_title_images(max_width, max_height)
       words = [:keyword, :title].keep_if { |a| fetch_text(a) } # optional keyword/title
       results = {}
-      words.each do |key|
-        # Create empty background
-        empty_path = File.join(Helper.gem_path('frameit'), "lib/assets/empty.png")
-        title_image = MiniMagick::Image.open(empty_path)
-        image_height = actual_font_size * 2 # gets trimmed afterwards anyway, and on the iPad the `y` would get cut
-        title_image.combine_options do |i|
-          # * 2.0 as the text might be larger than the actual image. We're trimming afterwards anyway
-          i.resize "#{max_width * 2.0}x#{image_height}!" # `!` says it should ignore the ratio
-        end
-
+      words.each do |key|        
         current_font = font(key)
         text = fetch_text(key)
         Helper.log.debug "Using #{current_font} as font the #{key} of #{screenshot.path}" if $verbose and current_font
         Helper.log.debug "Adding text '#{text}'" if $verbose
 
-        # Add the actual title
-        title_image.combine_options do |i|
-          i.font current_font if current_font
-          i.gravity "Center"
-          i.pointsize actual_font_size
-          i.draw "text 0,0 '#{text}'"
-          i.fill fetch_config[key.to_s]['color']
+        title_image = nil
+        done = false
+        font_size = actual_font_size
+        while !done do
+          title_image = MiniMagick::Image.create 'png', false do |tf|
+            MiniMagick::Tool::Convert.new do |c|
+              c.size "#{max_width}x"
+              c.background 'transparent'
+              c.fill fetch_config[key.to_s]['color']
+              c.font current_font if current_font
+              c.pointsize font_size
+              c.gravity 'Center'
+              c.caption fetch_text(key)
+              c << "png:#{tf.path()}"
+            end
+          end
+
+          next_font_size = font_size - 1
+          if title_image.height <= max_height || next_font_size.zero?
+            done = true
+          else
+            Helper.log.debug "Font size of #{font_size} is too big to fit into #{max_height}, decrementing it..." if $verbose
+            font_size = next_font_size
+          end
         end
-        title_image.trim # remove white space
 
         results[key] = title_image
       end
